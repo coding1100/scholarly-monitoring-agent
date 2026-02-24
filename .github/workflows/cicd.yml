@@ -1,0 +1,95 @@
+name: CI-CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Run Tests
+        run: pytest
+
+  deploy:
+    name: Deploy to VPS
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-site-watch-agent-main
+      cancel-in-progress: true
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Required Secrets
+        run: |
+          test -n "$VPS_HOST" || (echo "Missing VPS_HOST secret" && exit 1)
+          test -n "$VPS_USER" || (echo "Missing VPS_USER secret" && exit 1)
+          test -n "${{ secrets.VPS_PASSWORD }}" || (echo "Missing VPS_PASSWORD secret" && exit 1)
+          test -n "${{ secrets.PROD_ENV_FILE }}" || (echo "Missing PROD_ENV_FILE secret" && exit 1)
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Add VPS to Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${VPS_PORT:-22}" "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Sync Project to VPS
+        run: |
+          APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
+          export SSHPASS="${{ secrets.VPS_PASSWORD }}"
+          sshpass -e ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" "mkdir -p '${APP_DIR}'"
+          sshpass -e rsync -az --delete \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude ".venv/" \
+            --exclude "venv/" \
+            --exclude "__pycache__/" \
+            --exclude ".pytest_cache/" \
+            --exclude "data/" \
+            --exclude ".env" \
+            -e "ssh -p ${VPS_PORT:-22}" \
+            ./ "${VPS_USER}@${VPS_HOST}:${APP_DIR}/"
+
+      - name: Deploy with Docker Compose
+        run: |
+          APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
+          export SSHPASS="${{ secrets.VPS_PASSWORD }}"
+          sshpass -e ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" << EOF
+          set -euo pipefail
+          mkdir -p "${APP_DIR}/data"
+          cat > "${APP_DIR}/.env" << 'ENVEOF'
+          ${{ secrets.PROD_ENV_FILE }}
+          ENVEOF
+          cd "${APP_DIR}"
+          docker compose up -d --build --remove-orphans
+          docker compose ps
+          EOF
