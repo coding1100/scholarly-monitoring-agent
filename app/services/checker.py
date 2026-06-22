@@ -30,7 +30,15 @@ class WebsiteChecker:
         self.settings = settings or get_settings()
         self._client = httpx.AsyncClient(
             follow_redirects=True,
-            headers={"User-Agent": self.settings.checker_user_agent},
+            headers={
+                "User-Agent": self.settings.checker_user_agent,
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                    "image/avif,image/webp,*/*;q=0.8"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+            },
         )
 
     async def close(self) -> None:

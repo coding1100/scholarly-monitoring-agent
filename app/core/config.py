@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     auto_create_schema: bool = Field(default=False)
 
     checker_default_timeout_seconds: float = Field(default=5.0)
-    checker_user_agent: str = Field(default="site-watch-agent/0.1.0")
+    checker_user_agent: str = Field(
+        default=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        )
+    )
     checker_max_response_chars: int = Field(default=500)
     transient_retry_attempts: int = Field(default=1)
     transient_retry_backoff_seconds: float = Field(default=0.5)
