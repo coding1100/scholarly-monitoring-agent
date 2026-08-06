@@ -41,6 +41,7 @@ jobs:
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT }}
       VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,13 +50,15 @@ jobs:
         run: |
           test -n "$VPS_HOST" || (echo "Missing VPS_HOST secret" && exit 1)
           test -n "$VPS_USER" || (echo "Missing VPS_USER secret" && exit 1)
-          test -n "${{ secrets.VPS_PASSWORD }}" || (echo "Missing VPS_PASSWORD secret" && exit 1)
+          test -n "$SSH_PRIVATE_KEY" || (echo "Missing SSH_PRIVATE_KEY secret" && exit 1)
           test -n "${{ secrets.PROD_ENV_FILE }}" || (echo "Missing PROD_ENV_FILE secret" && exit 1)
 
-      - name: Install sshpass
+      - name: Setup SSH
         run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "${VPS_PORT:-22}" "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Add VPS to Known Hosts
         run: |
@@ -65,9 +68,7 @@ jobs:
       - name: Sync Project to VPS
         run: |
           APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
-          export SSHPASS="${{ secrets.VPS_PASSWORD }}"
-          sshpass -e ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" "mkdir -p '${APP_DIR}'"
-          sshpass -e rsync -az --delete \
+          rsync -az --delete \
             --exclude ".git/" \
             --exclude ".github/" \
             --exclude ".venv/" \
@@ -82,8 +83,7 @@ jobs:
       - name: Deploy with Docker Compose
         run: |
           APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
-          export SSHPASS="${{ secrets.VPS_PASSWORD }}"
-          sshpass -e ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" << EOF
+          ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" << 'EOF'
           set -euo pipefail
           mkdir -p "${APP_DIR}/data"
           cat > "${APP_DIR}/.env" << 'ENVEOF'
