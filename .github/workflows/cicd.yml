@@ -11,6 +11,7 @@ jobs:
   ci:
     name: Test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,73 +24,193 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          python -m pip install -e ".[test]"
 
       - name: Run Tests
-        run: pytest
+        run: python -m pytest
 
   deploy:
     name: Deploy to VPS
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: ci
     runs-on: ubuntu-latest
+
     concurrency:
       group: deploy-site-watch-agent-main
       cancel-in-progress: true
+
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT }}
       VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Validate Required Secrets
+        shell: bash
         run: |
-          test -n "$VPS_HOST" || (echo "Missing VPS_HOST secret" && exit 1)
-          test -n "$VPS_USER" || (echo "Missing VPS_USER secret" && exit 1)
-          test -n "$SSH_PRIVATE_KEY" || (echo "Missing SSH_PRIVATE_KEY secret" && exit 1)
-          test -n "${{ secrets.PROD_ENV_FILE }}" || (echo "Missing PROD_ENV_FILE secret" && exit 1)
+          set -euo pipefail
+
+          test -n "$VPS_HOST" || {
+            echo "Missing VPS_HOST secret"
+            exit 1
+          }
+
+          test -n "$VPS_USER" || {
+            echo "Missing VPS_USER secret"
+            exit 1
+          }
+
+          test -n "$SSH_PRIVATE_KEY" || {
+            echo "Missing SSH_PRIVATE_KEY secret"
+            exit 1
+          }
+
+          test -n "$PROD_ENV_FILE" || {
+            echo "Missing PROD_ENV_FILE secret"
+            exit 1
+          }
+
+      - name: Resolve Deployment Settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
+          SSH_PORT="${VPS_PORT:-22}"
+
+          case "$APP_DIR" in
+            /*) ;;
+            *)
+              echo "VPS_APP_DIR must be an absolute path."
+              exit 1
+              ;;
+          esac
+
+          case "$APP_DIR" in
+            "/"|"/opt"|"/root"|"/home"|"/var")
+              echo "Unsafe VPS_APP_DIR: $APP_DIR"
+              exit 1
+              ;;
+          esac
+
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
 
       - name: Setup SSH
+        shell: bash
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p "${VPS_PORT:-22}" "$VPS_HOST" >> ~/.ssh/known_hosts
+          set -euo pipefail
 
-      - name: Add VPS to Known Hosts
+          mkdir -p "$HOME/.ssh"
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" |
+            tr -d '\r' > "$HOME/.ssh/id_rsa"
+
+          chmod 600 "$HOME/.ssh/id_rsa"
+
+          ssh-keyscan \
+            -p "$SSH_PORT" \
+            "$VPS_HOST" \
+            >> "$HOME/.ssh/known_hosts"
+
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Prepare VPS Directory
+        shell: bash
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -p "${VPS_PORT:-22}" "$VPS_HOST" >> ~/.ssh/known_hosts
+          set -euo pipefail
+
+          ssh \
+            -T \
+            -p "$SSH_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            bash -s -- "$APP_DIR" <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="$1"
+
+          case "$APP_DIR" in
+            "/"|"/opt"|"/root"|"/home"|"/var")
+              echo "Unsafe remote application directory: $APP_DIR"
+              exit 1
+              ;;
+          esac
+
+          mkdir -p "$APP_DIR/data"
+
+          echo "Prepared deployment directory: $APP_DIR"
+          REMOTE
 
       - name: Sync Project to VPS
+        shell: bash
         run: |
-          APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
+          set -euo pipefail
+
           rsync -az --delete \
             --exclude ".git/" \
             --exclude ".github/" \
             --exclude ".venv/" \
             --exclude "venv/" \
             --exclude "__pycache__/" \
+            --exclude "*.pyc" \
             --exclude ".pytest_cache/" \
+            --exclude ".mypy_cache/" \
+            --exclude ".ruff_cache/" \
+            --exclude ".coverage" \
+            --exclude "*.egg-info/" \
             --exclude "data/" \
             --exclude ".env" \
-            -e "ssh -p ${VPS_PORT:-22}" \
-            ./ "${VPS_USER}@${VPS_HOST}:${APP_DIR}/"
+            -e "ssh -p $SSH_PORT" \
+            ./ \
+            "$VPS_USER@$VPS_HOST:$APP_DIR/"
+
+      - name: Upload Production Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMP_ENV_FILE="$(mktemp)"
+          trap 'rm -f "$TEMP_ENV_FILE"' EXIT
+
+          printf '%s\n' "$PROD_ENV_FILE" > "$TEMP_ENV_FILE"
+          chmod 600 "$TEMP_ENV_FILE"
+
+          rsync -az \
+            -e "ssh -p $SSH_PORT" \
+            "$TEMP_ENV_FILE" \
+            "$VPS_USER@$VPS_HOST:$APP_DIR/.env"
+
+          ssh \
+            -T \
+            -p "$SSH_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "chmod 600 '$APP_DIR/.env'"
 
       - name: Deploy with Docker Compose
+        shell: bash
         run: |
-          APP_DIR="${VPS_APP_DIR:-/opt/site-watch-agent}"
-          ssh -p "${VPS_PORT:-22}" "${VPS_USER}@${VPS_HOST}" << 'EOF'
           set -euo pipefail
-          mkdir -p "${APP_DIR}/data"
-          cat > "${APP_DIR}/.env" << 'ENVEOF'
-          ${{ secrets.PROD_ENV_FILE }}
-          ENVEOF
-          cd "${APP_DIR}"
+
+          ssh \
+            -T \
+            -p "$SSH_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            bash -s -- "$APP_DIR" <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="$1"
+
+          cd "$APP_DIR"
+
+          echo "Deploying from: $(pwd)"
+          df -h /
+
           docker compose up -d --build --remove-orphans
           docker compose ps
-          EOF
+          REMOTE
