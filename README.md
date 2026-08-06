@@ -24,7 +24,7 @@ Production-ready website monitoring service with:
 - Optionally mark check failed if `content_substring` is missing from response body.
 - ClickUp status messages are sent every 15 minutes by default (`STATUS_NOTIFICATION_INTERVAL_SECONDS=900`).
 - Transition timing remains threshold-based; optional transition delay can be configured with `STATE_TRANSITION_DELAY_SECONDS` (default `0`).
-- Optional env-driven monitor: set `URL_CHECK` in `.env` and worker will auto-create/manage `env-url-check` monitor.
+- Optional env-driven monitors: set `URL_CHECKS=https://scholarlyhelp.com/,https://mindrind.net/` in `.env` and worker will auto-create/manage deterministic monitors (e.g. `env-url-check-scholarlyhelp-com`). Falls back to `URL_CHECK` if `URL_CHECKS` is not set.
 - Trigger outage incident after `failure_threshold` consecutive failures.
 - Trigger recovery after `recovery_threshold` consecutive successes.
 - Duplicate same-type notifications are throttled by `STATUS_NOTIFICATION_INTERVAL_SECONDS`.
@@ -92,7 +92,8 @@ DATABASE_URL=sqlite+aiosqlite:///./data/monitor.db
 API_HOST=0.0.0.0
 API_PORT=8000
 HOST_API_PORT=8030
-URL_CHECK=https://example.com
+URL_CHECKS=https://scholarlyhelp.com/,https://mindrind.net/
+# URL_CHECK=https://scholarlyhelp.com/
 STATUS_NOTIFICATION_INTERVAL_SECONDS=900
 STATE_TRANSITION_DELAY_SECONDS=0
 CLICKUP_BASE_URL=https://api.clickup.com/api/v3
@@ -112,7 +113,8 @@ Set these in `.env`:
 - `CLICKUP_WORKSPACE_ID`: target workspace for Chat APIs.
 - `CLICKUP_CHANNEL_ID`: channel to post alerts to (channel mode).
 - `CLICKUP_DM_USER_ID`: user id for direct message alerts (DM mode).
-- `URL_CHECK`: optional URL to auto-monitor without creating a monitor manually via API.
+- `URL_CHECKS`: comma-separated URLs to auto-monitor (e.g. `https://scholarlyhelp.com/,https://mindrind.net/`). Takes precedence over `URL_CHECK`.
+- `URL_CHECK`: optional legacy fallback URL if `URL_CHECKS` is omitted.
 
 Set either `CLICKUP_CHANNEL_ID` or `CLICKUP_DM_USER_ID`.
 
